@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Quality Report</title>
+<style>
+  :root {
+    --green: #01a982;
+    --red: #c8102e;
+    --amber: #ff8d6d;
+    --ink: #1c1c1c;
+    --muted: #5f6b6d;
+    --line: #e1e4e5;
+    --bg: #f7f8f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px;
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.45;
+  }
+  header { border-bottom: 4px solid var(--green); padding-bottom: 16px; margin-bottom: 24px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .meta code { background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .cards { display: flex; flex-wrap: wrap; gap: 14px; margin: 20px 0 28px; }
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px; min-width: 150px; flex: 1 1 150px;
+  }
+  .card .value { font-size: 26px; font-weight: 600; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card.pass .value { color: var(--green); }
+  .card.fail .value { color: var(--red); }
+  .card.error .value { color: var(--amber); }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 18px; border-left: 4px solid var(--green); padding-left: 10px; margin-bottom: 14px; }
+  img.chart { max-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  details {
+    background: #fff; border: 1px solid var(--line); border-left-width: 5px;
+    border-radius: 8px; margin-bottom: 10px; padding: 0;
+  }
+  details.status-PASS { border-left-color: var(--green); }
+  details.status-FAIL { border-left-color: var(--red); }
+  details.status-ERROR { border-left-color: var(--amber); }
+  summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "\25B8"; display: inline-block; margin-right: 8px; transition: transform .15s; color: var(--muted); }
+  details[open] > summary::before { transform: rotate(90deg); }
+  .badge {
+    display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 11px;
+    font-weight: 700; letter-spacing: .04em; margin-left: 8px; vertical-align: middle;
+  }
+  .badge.PASS { background: #d9f3ea; color: #00674f; }
+  .badge.FAIL { background: #fbdde2; color: #8c0b20; }
+  .badge.ERROR { background: #ffe6dd; color: #8c4223; }
+  .body { padding: 0 16px 16px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+  .note { background: #fff8e6; border: 1px solid #f3dfa8; border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+  .table-wrap { max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table.dq-table { border-collapse: collapse; width: 100%; font-size: 12px; background: #fff; }
+  table.dq-table th {
+    position: sticky; top: 0; background: #eef1f2; text-align: left;
+    padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  table.dq-table td { padding: 6px 10px; border-bottom: 1px solid #f0f2f3; vertical-align: top; }
+  table.dq-table tr:hover td { background: #fafbfb; }
+  h4 { margin: 16px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  footer { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Data Quality Report</h1>
+  <div class="meta">
+    <code>{{ report.source_path }}</code> &nbsp;&middot;&nbsp; sheet <code>{{ report.sheet_name }}</code>
+    &nbsp;&middot;&nbsp; {{ report.row_count }} rows &times; {{ report.column_count }} columns
+    &nbsp;&middot;&nbsp; generated {{ generated_at }}
+  </div>
+</header>
+
+<div class="cards">
+  <div class="card"><div class="value">{{ report.total_checks }}</div><div class="label">Checks run</div></div>
+  <div class="card pass"><div class="value">{{ report.passed_checks }}</div><div class="label">Passed</div></div>
+  <div class="card fail"><div class="value">{{ report.failed_checks }}</div><div class="label">Failed</div></div>
+  <div class="card error"><div class="value">{{ report.errored_checks }}</div><div class="label">Errored</div></div>
+  <div class="card"><div class="value">{{ report.total_failed_rows }}</div><div class="label">Flagged rows</div></div>
+</div>
+
+{% if report.notes %}
+<section>
+  <h2>Notes</h2>
+  {% for note in report.notes %}
+  <div class="note">{{ note }}</div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if failure_chart or missing_chart %}
+<section>
+  <h2>Overview</h2>
+  {% if failure_chart %}<img class="chart" src="{{ failure_chart }}" alt="Failing checks chart">{% endif %}
+  {% if missing_chart %}<img class="chart" src="{{ missing_chart }}" alt="Missing values chart">{% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Check results</h2>
+  {% for card in cards %}
+  <details class="status-{{ card.status }}" {% if card.status != 'PASS' %}open{% endif %}>
+    <summary>
+      {{ card.label }}
+      <span class="badge {{ card.status }}">{{ card.status }}</span>
+      {% if card.failed_count %}<span class="sub" style="font-weight:400">&nbsp;{{ card.failed_count }} rows ({{ card.failed_pct }}%)</span>{% endif %}
+    </summary>
+    <div class="body">
+      <div class="sub">
+        <strong>{{ card.dimension }}</strong> &middot; column(s): {{ card.columns }} &middot; rule <code>{{ card.rule_id }}</code>
+      </div>
+      <p>{{ card.message }}</p>
+
+      {% if card.detail_table %}
+      <h4>Detail</h4>
+      <div class="table-wrap">{{ card.detail_table }}</div>
+      {% endif %}
+
+      {% if card.flagged_table %}
+      <h4>Flagged rows{% if card.flagged_truncated %} (showing first {{ card.shown_rows }} of {{ card.failed_count }}){% endif %}</h4>
+      <div class="table-wrap">{{ card.flagged_table }}</div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+</section>
+
+{% if missing_table %}
+<section>
+  <h2>Missing values by column</h2>
+  <div class="table-wrap">{{ missing_table }}</div>
+</section>
+{% endif %}
+
+{% if profile_table %}
+<section>
+  <h2>Column profile</h2>
+  <div class="table-wrap">{{ profile_table }}</div>
+</section>
+{% endif %}
+
+<footer>Generated by dq-platform &middot; {{ generated_at }}</footer>
+
+</body>
+</html>
