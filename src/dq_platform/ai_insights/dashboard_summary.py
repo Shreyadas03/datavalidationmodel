@@ -1,4 +1,4 @@
-"""Whole-dashboard AI narrative summary.
+"""Whole-dashboard summary for the AI Insights section.
 
 This module produces a single, business-friendly summary of *everything*
 the combined report is doing/found -- Data Quality checks, Revenue
@@ -7,26 +7,25 @@ Validation (ZDEL / Tier 2 Reseller / Renewal Quote), and Business Case
 :mod:`dq_platform.ai_insights.narrative`, which only narrates the
 current-vs-previous / 3-month trend comparison.
 
-Same design rules as the trend narrative:
+Design rules:
  - Every fact comes from already-computed report/KPI objects. Nothing here
    re-implements or changes the underlying validation logic.
- - AI (when configured) is used only to phrase the summary; the prompt is
-   built strictly from the facts below and instructs the model never to
-   invent numbers or root causes.
- - Falls back to a deterministic, template-built summary when the AI
-   backend is unconfigured or unavailable -- report generation is never
-   blocked by AI availability.
+ - The summary text is built deterministically from those facts, and the
+   "why" comes from the decision-tree root cause analysis in
+   :mod:`dq_platform.ai_insights.root_cause`. No external AI service is
+   called.
 """
 
 from __future__ import annotations
 
 import html as html_lib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
 
-from dq_platform.ai_insights.narrative import AIConfig, InsightsNarrative, _call_chat_completions
+from dq_platform.ai_insights.narrative import NARRATIVE_SOURCE, InsightsNarrative
+from dq_platform.ai_insights.root_cause import METHOD_LEARNED_TREE, RootCauseFinding
 from dq_platform.comparison import RevenueComparisonReport
 from dq_platform.models import QualityReport
 from dq_platform.report.scoring import DashboardKpis
@@ -71,6 +70,25 @@ class DashboardFacts:
     validation_total: int
     critical_count: int
 
+    # Extra context used by the root cause decision tree
+    old_row_count: int = 0
+    new_row_count: int = 0
+    old_non_numeric_revenue_count: int = 0
+    new_non_numeric_revenue_count: int = 0
+    tier2_top_geography: Optional[str] = None
+    tier2_top_geography_share: Optional[float] = None
+
+
+def _top_geography_share(revenue_report: RevenueComparisonReport) -> Optional[float]:
+    frame = revenue_report.tier2_missing_by_geography
+    if frame is None or frame.empty or "Missing Count" not in frame.columns:
+        return None
+    counts = pd.to_numeric(frame["Missing Count"], errors="coerce").fillna(0)
+    total = float(counts.sum())
+    if total <= 0:
+        return None
+    return float(counts.max()) / total
+
 
 def collect_dashboard_facts(
     quality_report: Optional[QualityReport],
@@ -112,6 +130,12 @@ def collect_dashboard_facts(
         validation_passed=kpis.validation_passed,
         validation_total=kpis.validation_total,
         critical_count=kpis.critical_count,
+        old_row_count=revenue_report.old_row_count,
+        new_row_count=revenue_report.new_row_count,
+        old_non_numeric_revenue_count=revenue_report.old_non_numeric_revenue_count,
+        new_non_numeric_revenue_count=revenue_report.new_non_numeric_revenue_count,
+        tier2_top_geography=revenue_report.tier2_top_geography,
+        tier2_top_geography_share=_top_geography_share(revenue_report),
     )
 
 
@@ -122,7 +146,8 @@ class DashboardSummary:
     revenue_validation_summary: str
     business_case_summary: str
     key_risks: list[str]
-    source: str  # "ai" or "fallback"
+    root_causes: list[RootCauseFinding] = field(default_factory=list)
+    source: str = NARRATIVE_SOURCE
 
 
 def _fmt(value, suffix: str = "") -> str:
@@ -139,50 +164,8 @@ def _fmt_millions(value: Optional[float]) -> str:
     return f"{value / 1_000_000:,.2f}M"
 
 
-def build_dashboard_summary_prompt(facts: DashboardFacts) -> str:
-    """Assemble a strict, numbers-only prompt covering the whole dashboard."""
-    return (
-        "You are a data quality analyst writing a concise, business-friendly "
-        "overview of an entire validation dashboard for a business "
-        "stakeholder. Use ONLY the numbers provided below. Do not invent any "
-        "figures, root causes, or facts that are not explicitly stated. If "
-        "information is insufficient, say so plainly.\n\n"
-        "Data Quality checks:\n"
-        f"- Checks passed: {facts.dq_checks_passed}/{facts.dq_checks_total} "
-        f"(DQ Score {_fmt(facts.dq_score_pct, '%')})\n"
-        f"- Checks failed: {facts.dq_checks_failed}\n"
-        f"- Checks errored: {facts.dq_checks_errored}\n\n"
-        "Revenue Validation:\n"
-        f"- {facts.zdel_document_type} revenue: {_fmt_millions(facts.zdel_old_sum)} -> "
-        f"{_fmt_millions(facts.zdel_new_sum)} ({_fmt(facts.zdel_delta_pct, '%')} change; "
-        f"threshold {_fmt(facts.zdel_threshold_pct, '%')}; "
-        f"{'EXCEEDED' if facts.zdel_threshold_exceeded else 'within threshold'})\n"
-        f"- Missing Tier 2 Reseller (indirect channel): {facts.indirect_missing_tier2_count} "
-        f"of {facts.indirect_row_count} indirect rows missing "
-        f"({_fmt(facts.tier2_missing_pct, '%')}, severity {facts.tier2_severity})\n"
-        f"- Renewal Quote completeness: old missing {_fmt(facts.renewal_old_missing_pct, '%')}, "
-        f"new missing {_fmt(facts.renewal_new_missing_pct, '%')} "
-        f"(threshold {_fmt(facts.renewal_threshold_pct, '%')}; "
-        f"{'EXCEEDED' if facts.renewal_threshold_exceeded else 'within threshold'})\n\n"
-        "Business Case Validation:\n"
-        f"- Multiyear Flag violations (Months Duration > 12 but Flag != X): "
-        f"{_fmt(facts.business_case_violations)}\n\n"
-        "Overall:\n"
-        f"- Validation checks passed: {facts.validation_passed}/{facts.validation_total}\n"
-        f"- Critical issues flagged: {facts.critical_count}\n\n"
-        "Respond as compact JSON with exactly these keys: "
-        "overview (1-2 sentences summarizing the whole dashboard), "
-        "data_quality_summary (1-2 sentences), "
-        "revenue_validation_summary (2-3 sentences covering ZDEL/Tier 2/Renewal), "
-        "business_case_summary (1-2 sentences), "
-        "key_risks (array of short strings, empty array if none). "
-        "No markdown, no extra keys, no commentary outside the JSON object."
-    )
-
-
-def _fallback_dashboard_summary(facts: DashboardFacts) -> DashboardSummary:
-    """Deterministic, template-built whole-dashboard summary -- used whenever
-    the AI call is unavailable, unconfigured, or fails."""
+def _base_dashboard_summary(facts: DashboardFacts) -> DashboardSummary:
+    """Template-built whole-dashboard summary from the calculated facts."""
     overview = (
         f"{facts.validation_passed}/{facts.validation_total} validation checks passed "
         f"this refresh, with {facts.critical_count} critical issue(s) flagged across "
@@ -259,44 +242,17 @@ def _fallback_dashboard_summary(facts: DashboardFacts) -> DashboardSummary:
         revenue_validation_summary=revenue_validation_summary,
         business_case_summary=business_case_summary,
         key_risks=key_risks,
-        source="fallback",
     )
 
 
 def generate_dashboard_summary(
-    facts: DashboardFacts, *, config: Optional[AIConfig] = None
+    facts: DashboardFacts, *, root_causes: Optional[list[RootCauseFinding]] = None
 ) -> DashboardSummary:
-    """Generate the whole-dashboard AI narrative summary, falling back to a
-    deterministic template if the AI backend is unconfigured or unavailable."""
-    config = config or AIConfig.from_env()
-    fallback = _fallback_dashboard_summary(facts)
-
-    if not config.enabled:
-        return fallback
-
-    prompt = build_dashboard_summary_prompt(facts)
-    ai_payload = _call_chat_completions(config, prompt)
-    if not ai_payload:
-        return fallback
-
-    try:
-        return DashboardSummary(
-            overview=str(ai_payload.get("overview") or fallback.overview),
-            data_quality_summary=str(
-                ai_payload.get("data_quality_summary") or fallback.data_quality_summary
-            ),
-            revenue_validation_summary=str(
-                ai_payload.get("revenue_validation_summary")
-                or fallback.revenue_validation_summary
-            ),
-            business_case_summary=str(
-                ai_payload.get("business_case_summary") or fallback.business_case_summary
-            ),
-            key_risks=list(ai_payload.get("key_risks") or fallback.key_risks),
-            source="ai",
-        )
-    except (TypeError, ValueError):
-        return fallback
+    """Build the whole-dashboard summary and attach the decision-tree
+    root cause findings (see :mod:`dq_platform.ai_insights.root_cause`)."""
+    summary = _base_dashboard_summary(facts)
+    summary.root_causes = list(root_causes or [])
+    return summary
 
 
 def _risk_chips_html(risks: list[str]) -> str:
@@ -313,10 +269,40 @@ def _list_html(items: list[str]) -> str:
     return "".join(f"<li>{html_lib.escape(str(item))}</li>" for item in items)
 
 
+def _root_causes_html(findings: list[RootCauseFinding]) -> str:
+    if not findings:
+        body = "<li>No failing findings needed root cause analysis this refresh.</li>"
+    else:
+        items = []
+        for finding in findings:
+            method = (
+                "Learned decision tree (row-level segments)"
+                if finding.method == METHOD_LEARNED_TREE
+                else "Rule-based decision tree"
+            )
+            path = " &rarr; ".join(html_lib.escape(step) for step in finding.path)
+            items.append(
+                "<li>"
+                f"<b>[{html_lib.escape(finding.severity)}] {html_lib.escape(finding.area)}:</b> "
+                f"{html_lib.escape(finding.symptom)}<br>"
+                f"<b>Likely root cause:</b> {html_lib.escape(finding.root_cause)}<br>"
+                f"<b>Evidence:</b> {html_lib.escape(finding.evidence)}<br>"
+                f"<b>Recommended action:</b> {html_lib.escape(finding.recommendation)}<br>"
+                f'<span class="subtle">{html_lib.escape(method)}'
+                + (f" &middot; Decision path: {path}" if path else "")
+                + "</span></li>"
+            )
+        body = "".join(items)
+    return f"""<div class="dash-summary-card">
+    <div class="dash-summary-title">Root Cause Analysis (Decision Tree)</div>
+    <ul>{body}</ul>
+  </div>"""
+
+
 def build_dashboard_summary_section_html(
     summary: DashboardSummary, narrative: Optional[InsightsNarrative] = None
 ) -> str:
-    """Render the whole-dashboard AI summary as an HTML fragment.
+    """Render the whole-dashboard summary as an HTML fragment.
 
     When ``narrative`` (an :class:`~dq_platform.ai_insights.narrative.InsightsNarrative`)
     is provided, its current-vs-previous / 3-month trend content is folded
@@ -330,10 +316,9 @@ def build_dashboard_summary_section_html(
     ``<style>`` block).
     """
     source_note = (
-        "AI-generated overview of the full dashboard."
-        if summary.source == "ai"
-        else "Deterministic overview (AI backend not configured or unavailable) "
-        "based on the same calculated results."
+        "Generated by decision-tree root cause analysis (a rule-based tree over the "
+        "calculated results plus a decision tree learned from the row-level data). "
+        "No external AI service is used."
     )
 
     trend_html = ""
@@ -382,6 +367,7 @@ def build_dashboard_summary_section_html(
     </div>
   </div>
   {trend_html}
+  {_root_causes_html(summary.root_causes)}
   <div class="dash-summary-card">
     <div class="dash-summary-title">Key Risks</div>
     <div class="risk-chip-row">{_risk_chips_html(summary.key_risks)}</div>

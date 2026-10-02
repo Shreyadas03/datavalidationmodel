@@ -68,6 +68,7 @@ is why the whole platform runs headless as a plain script.
 | `io_utils.py` | Path validation, sheet listing, header-only reads, DataFrame loading, profiling. |
 | `report/excel.py` | Multi-sheet workbook via XlsxWriter. |
 | `report/html.py` + `templates/` | Self-contained dashboard via Jinja2 and matplotlib. |
+| `ai_insights/` | Combined-report AI Insights: history log, trend statistics, and decision-tree root cause analysis (`root_cause.py`: a rule-based tree plus a scikit-learn tree learned from row-level failures). Read-only over results; no external AI service. |
 | `ui/widgets.py` | ipywidgets front end. Presentation only — it builds `RuleSpec`s and calls the engine. |
 
 ---

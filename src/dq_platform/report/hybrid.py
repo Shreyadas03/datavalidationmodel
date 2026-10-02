@@ -18,6 +18,8 @@ from dq_platform.ai_insights import (
     compare_to_previous,
     generate_dashboard_summary,
     generate_narrative,
+    learned_segment_root_causes,
+    rule_based_root_causes,
 )
 from dq_platform.ai_insights.trend import build_trend_results
 from dq_platform.comparison import RevenueComparisonReport
@@ -301,7 +303,10 @@ def write_hybrid_combined_html(
         history_store.append(current_snapshot)
 
         dashboard_facts = collect_dashboard_facts(quality_report, revenue_report, kpis, quality_df)
-        dashboard_summary = generate_dashboard_summary(dashboard_facts)
+        root_causes = rule_based_root_causes(dashboard_facts, trends) + learned_segment_root_causes(
+            quality_report, quality_df
+        )
+        dashboard_summary = generate_dashboard_summary(dashboard_facts, root_causes=root_causes)
         dashboard_summary_html = build_dashboard_summary_section_html(dashboard_summary, narrative)
 
     completeness_chart = dashboard.data_completeness_blank_chart(quality_df)

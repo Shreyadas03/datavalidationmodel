@@ -1,10 +1,11 @@
-"""AI-powered Data Quality Narrative & Trend Analysis layer.
+"""AI Insights layer: data quality narrative, trend and root cause analysis.
 
 This package is purely additive: it reads already-computed validation
 results/KPIs, maintains a local history log, performs deterministic
-statistical trend analysis, and (optionally) asks an AI model to phrase the
-findings as a narrative. It never modifies or recomputes any existing
-validation/rule logic.
+statistical trend analysis, and explains failures with decision-tree root
+cause analysis (a rule-based tree plus a tree learned from row-level data).
+No external AI service is called. It never modifies or recomputes any
+existing validation/rule logic.
 """
 
 from dq_platform.ai_insights.history import (
@@ -20,9 +21,13 @@ from dq_platform.ai_insights.dashboard_summary import (
     generate_dashboard_summary,
 )
 from dq_platform.ai_insights.narrative import (
-    AIConfig,
     InsightsNarrative,
     generate_narrative,
+)
+from dq_platform.ai_insights.root_cause import (
+    RootCauseFinding,
+    learned_segment_root_causes,
+    rule_based_root_causes,
 )
 from dq_platform.ai_insights.trend import (
     MetricChange,
@@ -35,9 +40,11 @@ __all__ = [
     "HistoryStore",
     "MetricSnapshot",
     "collect_metric_snapshot",
-    "AIConfig",
     "InsightsNarrative",
     "generate_narrative",
+    "RootCauseFinding",
+    "rule_based_root_causes",
+    "learned_segment_root_causes",
     "MetricChange",
     "TrendResult",
     "build_trend_results",
